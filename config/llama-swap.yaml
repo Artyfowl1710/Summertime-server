@@ -1,0 +1,11 @@
+# llama-swap configuration skeleton
+# This file is live-reloaded when --watch-config is active.
+# Add models here or let the gateway manage entries via POST /v1/models.
+#
+# Example entry:
+# models:
+#   my-gguf-model:
+#     model: /models/my-gguf-model/model.gguf
+#     args: ["--ctx-size", "4096", "--n-gpu-layers", "35"]
+
+models: {}
