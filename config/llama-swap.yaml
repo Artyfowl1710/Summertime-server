@@ -1,11 +1,3 @@
-# llama-swap configuration skeleton
-# This file is live-reloaded when --watch-config is active.
-# Add models here or let the gateway manage entries via POST /v1/models.
-#
-# Example entry:
-# models:
-#   my-gguf-model:
-#     model: /models/my-gguf-model/model.gguf
-#     args: ["--ctx-size", "4096", "--n-gpu-layers", "35"]
-
-models: {}
+models:
+  qwen3.5-4b:
+    cmd: llama-server --port ${PORT} --model "C:\Users\khatr\OneDrive\Desktop\server-workbench\models\Qwen_Qwen3.5-4B-Q4_K_M.gguf"

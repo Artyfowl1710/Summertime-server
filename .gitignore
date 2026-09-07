@@ -58,4 +58,7 @@ Thumbs.db
 build/
 dist/
 .coverage
-htmlcov/
+htmlcov/bin/
+venv/
+*.exe
+*.dll
