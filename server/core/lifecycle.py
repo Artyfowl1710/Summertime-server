@@ -1,5 +1,5 @@
-"""
-ModelLifecycleManager — GPU-aware load/evict/queue with hard invariants.
+﻿"""
+ModelLifecycleManager â€” GPU-aware load/evict/queue with hard invariants.
 
 Hard invariants (enforced, tested):
   1. A model with active_requests > 0 is NEVER evicted or unloaded.
@@ -63,7 +63,7 @@ class ModelLifecycleManager:
         self._queue = LoadQueue()
         self._lock = asyncio.Lock()   # serialises status transitions; not held during I/O
 
-    # ── backend registration ──────────────────────────────────────────────────
+    # â”€â”€ backend registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def register_backend(
         self,
@@ -74,7 +74,50 @@ class ModelLifecycleManager:
         self._load_fns[backend] = load_fn
         self._unload_fns[backend] = unload_fn
 
-    # ── request tracking ──────────────────────────────────────────────────────
+
+    async def reconcile_loaded_models(self) -> None:
+        """
+        Reconcile Workbench DB state with models actually loaded by llama-swap.
+
+        llama-swap can survive independently of the Workbench process, so
+        the DB may incorrectly say "cold" after a Workbench restart.
+        """
+        try:
+            from server.backends import llamaswap as ls_driver
+
+            loaded = await ls_driver.get_loaded_models()
+        except Exception as exc:
+            log.warning("Could not reconcile llama-swap state: %s", exc)
+            return
+
+        if not loaded:
+            log.info("llama-swap reconciliation: no loaded models reported")
+            return
+
+        now = datetime.utcnow()
+
+        with SessionLocal() as db:
+            models = (
+                db.query(ModelRecord)
+                .filter(
+                    ModelRecord.backend == "llamaswap",
+                    ModelRecord.id.in_(loaded),
+                )
+                .all()
+            )
+
+            for m in models:
+                if m.active_requests == 0:
+                    m.status = "idle"
+                    m.last_used_at = now
+
+                    log.info(
+                        "Reconciled llama-swap model %s: loaded -> idle",
+                        m.id,
+                    )
+
+            db.commit()
+    # â”€â”€ request tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @asynccontextmanager
     async def track_request(self, model_id: str) -> AsyncIterator[None]:
@@ -106,7 +149,7 @@ class ModelLifecycleManager:
                 m.status = "idle"
             db.commit()
 
-    # ── load / unload ─────────────────────────────────────────────────────────
+    # â”€â”€ load / unload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _ensure_loaded(self, model_id: str) -> None:
         with SessionLocal() as db:
@@ -217,7 +260,7 @@ class ModelLifecycleManager:
         async with self._lock:
             with SessionLocal() as db:
                 m = _get_model(db, model_id)
-                # ── HARD INVARIANT ────────────────────────────────────────────
+                # â”€â”€ HARD INVARIANT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if m.active_requests > 0:
                     raise BusyModelError(
                         f"Attempted to unload {model_id} with {m.active_requests} active requests"
@@ -239,7 +282,7 @@ class ModelLifecycleManager:
     async def force_unload(self, model_id: str) -> None:
         """
         Called by DELETE /v1/models/{id}.
-        Raises BusyModelError (→ 409) if model has active requests.
+        Raises BusyModelError (â†’ 409) if model has active requests.
         """
         with SessionLocal() as db:
             m = _get_model(db, model_id)
@@ -247,7 +290,7 @@ class ModelLifecycleManager:
                 raise BusyModelError(f"{model_id} has {m.active_requests} active requests")
         await self._unload(model_id)
 
-    # ── idle reaper (background task) ─────────────────────────────────────────
+    # â”€â”€ idle reaper (background task) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def idle_reaper(self) -> None:
         """Runs forever; call as asyncio.create_task()."""
@@ -293,13 +336,13 @@ class ModelLifecycleManager:
             except Exception as exc:
                 fut.set_exception(exc)
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    # â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _backend_for(self, model_id: str) -> str:
         with SessionLocal() as db:
             return _get_model(db, model_id).backend
 
-    # ── max_concurrent_vllm_processes enforcement ─────────────────────────────
+    # â”€â”€ max_concurrent_vllm_processes enforcement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _vllm_process_count(self) -> int:
         with SessionLocal() as db:
@@ -326,5 +369,6 @@ def _get_model(db: Session, model_id: str) -> ModelRecord:
     return m
 
 
-# ── singleton ─────────────────────────────────────────────────────────────────
+# â”€â”€ singleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 lifecycle = ModelLifecycleManager()
+

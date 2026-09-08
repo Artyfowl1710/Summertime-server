@@ -1,4 +1,4 @@
-"""
+﻿"""
 Pydantic v2 schemas — single source of truth for every API shape.
 No bare dicts cross module boundaries.
 """
@@ -10,10 +10,18 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
-# ── enums (as Literal unions so Pydantic validates them) ─────────────────────
+# ── enums (as Literal unions so Pydantic validates them) ──────────────────────
 
 Backend = Literal["llamaswap", "vllm", "onnxruntime", "comfyui"]
-ModelType = Literal["text", "coding", "vlm", "embedding", "image-gen", "video-gen", "audio-gen"]
+ModelType = Literal[
+    "text",
+    "coding",
+    "vlm",
+    "embedding",
+    "image-gen",
+    "video-gen",
+    "audio-gen",
+]
 SourceType = Literal["artifactory", "local_path", "hf_id"]
 ModelStatus = Literal["cold", "loading", "idle", "busy", "unloading"]
 KeyScope = Literal["admin", "user"]
@@ -22,12 +30,12 @@ JobStatus = Literal["queued", "running", "done", "failed"]
 Language = Literal["python", "javascript", "bash", "r"]
 
 
-# ── model source ──────────────────────────────────────────────────────────────
+# ── model source ─────────────────────────────────────────────────────────────
 
 class ModelSource(BaseModel):
     type: SourceType
-    path: Optional[str] = None    # artifactory path or local filesystem path
-    hf_id: Optional[str] = None   # HuggingFace repo id (only when type==hf_id)
+    path: Optional[str] = None
+    hf_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _check_ref(self) -> "ModelSource":
@@ -38,7 +46,7 @@ class ModelSource(BaseModel):
         return self
 
 
-# ── model registration (imperative + declarative share this schema) ───────────
+# ── model registration ──────────────────────────────────────────────────────
 
 class ModelRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
@@ -48,8 +56,8 @@ class ModelRegisterRequest(BaseModel):
     task_tags: list[str] = Field(default_factory=list)
     pinned: bool = False
     ttl_s: Optional[int] = None
-    vram_mb: Optional[int] = None          # declared footprint; skips probing
-    base_model_id: Optional[str] = None    # for LoRA adapters
+    vram_mb: Optional[int] = None
+    base_model_id: Optional[str] = None
 
 
 class ModelResponse(BaseModel):
@@ -67,11 +75,16 @@ class ModelStatusResponse(BaseModel):
     status: ModelStatus
 
 
-# ── chat / completions (OpenAI-compatible subset) ─────────────────────────────
+# ── chat / completions (OpenAI-compatible) ───────────────────────────────────
 
 class ChatMessage(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: str | list[dict[str, Any]]   # str for text; list for vision (image_url parts)
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | list[dict[str, Any]] | None = None
+
+    # OpenAI-compatible tool calling fields
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_calls: Optional[list[dict[str, Any]]] = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -80,11 +93,13 @@ class ChatCompletionRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     stream: bool = False
-    # any extra OpenAI-compatible fields pass through to the backend
+
+    # Preserve additional OpenAI-compatible fields, including:
+    # tools, tool_choice, response_format, extra_body, etc.
     model_config = {"extra": "allow"}
 
 
-# ── embeddings (OpenAI-compatible) ────────────────────────────────────────────
+# ── embeddings ───────────────────────────────────────────────────────────────
 
 class EmbeddingRequest(BaseModel):
     model: str
@@ -92,7 +107,7 @@ class EmbeddingRequest(BaseModel):
     encoding_format: Literal["float", "base64"] = "float"
 
 
-# ── generation jobs ───────────────────────────────────────────────────────────
+# ── generation jobs ──────────────────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -112,7 +127,7 @@ class JobStatusResponse(BaseModel):
     error: Optional[str] = None
 
 
-# ── RAG ───────────────────────────────────────────────────────────────────────
+# ── RAG ──────────────────────────────────────────────────────────────────────
 
 class RagQueryRequest(BaseModel):
     query: str
@@ -137,7 +152,7 @@ class RagIngestResponse(BaseModel):
     chunks_indexed: int
 
 
-# ── sandbox ───────────────────────────────────────────────────────────────────
+# ── sandbox ──────────────────────────────────────────────────────────────────
 
 class SandboxRequest(BaseModel):
     code: str
@@ -151,7 +166,7 @@ class SandboxResponse(BaseModel):
     exit_code: int
 
 
-# ── health ────────────────────────────────────────────────────────────────────
+# ── health ───────────────────────────────────────────────────────────────────
 
 class GpuInfo(BaseModel):
     id: int
@@ -165,7 +180,7 @@ class HealthResponse(BaseModel):
     models_loaded: list[str]
 
 
-# ── admin keys ────────────────────────────────────────────────────────────────
+# ── admin keys ───────────────────────────────────────────────────────────────
 
 class KeyCreateRequest(BaseModel):
     owner: str = Field(..., min_length=1, max_length=128)
@@ -173,7 +188,7 @@ class KeyCreateRequest(BaseModel):
 
 
 class KeyCreateResponse(BaseModel):
-    api_key: str   # shown once, never stored in plaintext
+    api_key: str
 
 
 class KeyListItem(BaseModel):
@@ -185,7 +200,7 @@ class KeyListItem(BaseModel):
     revoked: bool
 
 
-# ── client config (what Hermes reads on startup) ──────────────────────────────
+# ── client config ────────────────────────────────────────────────────────────
 
 class ClientConfig(BaseModel):
     api_base: str
@@ -197,7 +212,7 @@ class ClientConfig(BaseModel):
     model_config = {"protected_namespaces": ()}
 
 
-# ── models.yaml manifest ──────────────────────────────────────────────────────
+# ── models.yaml manifest ─────────────────────────────────────────────────────
 
 class ManifestEntry(BaseModel):
     name: str

@@ -1,4 +1,4 @@
-"""
+﻿"""
 llama-swap backend driver.
 
 llama-swap is an unmodified Go binary that:
@@ -50,7 +50,7 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
-# ── config management ─────────────────────────────────────────────────────────
+# â”€â”€ config management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _read_config() -> dict:
     p = settings.llamaswap_config
@@ -81,7 +81,7 @@ def remove_model_from_config(model_id: str) -> None:
     log.info("llama-swap config updated: removed %s", model_id)
 
 
-# ── process management ────────────────────────────────────────────────────────
+# â”€â”€ process management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def start() -> None:
     global _process
@@ -122,10 +122,46 @@ def stop() -> None:
 
 
 def is_running() -> bool:
-    return _process is not None and _process.poll() is None
+    """Return True if llama-swap is reachable on its configured port."""
+    if _process is not None and _process.poll() is None:
+        return True
+
+    try:
+        r = httpx.get(
+            f"{_base_url()}/v1/models",
+            timeout=2.0,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
-# ── lifecycle callbacks (injected into ModelLifecycleManager) ─────────────────
+async def get_loaded_models() -> set[str]:
+    """Return model IDs currently reported as loaded by llama-swap."""
+    try:
+        r = await get_client().get("/v1/models")
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        log.warning("Could not query llama-swap model state: %s", exc)
+        return set()
+
+    loaded: set[str] = set()
+
+    for item in data.get("data", []):
+        model_id = item.get("id")
+        status = item.get("status", {})
+
+        if (
+            model_id
+            and isinstance(status, dict)
+            and status.get("value") == "loaded"
+        ):
+            loaded.add(model_id)
+
+    return loaded
+
+# â”€â”€ lifecycle callbacks (injected into ModelLifecycleManager) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def load_model(model_id: str) -> None:
     """
@@ -148,7 +184,7 @@ async def unload_model(model_id: str) -> None:
     await asyncio.sleep(0.2)
 
 
-# ── proxy helpers ─────────────────────────────────────────────────────────────
+# â”€â”€ proxy helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def proxy_chat(request_body: dict) -> httpx.Response:
     return await get_client().post("/v1/chat/completions", json=request_body)
@@ -156,3 +192,4 @@ async def proxy_chat(request_body: dict) -> httpx.Response:
 
 async def proxy_embeddings(request_body: dict) -> httpx.Response:
     return await get_client().post("/v1/embeddings", json=request_body)
+

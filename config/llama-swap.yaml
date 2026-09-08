@@ -1,3 +1,1 @@
-models:
-  qwen3.5-4b:
-    cmd: llama-server --port ${PORT} --model "C:\Users\khatr\OneDrive\Desktop\server-workbench\models\Qwen_Qwen3.5-4B-Q4_K_M.gguf"
+models: {}
