@@ -76,7 +76,59 @@ sudo ufw deny 6333
 
 ---
 
-## 3. Cryptographic Authentication & Key Lifecycle
+## 3. Hardware Acceleration, CUDA Drivers & Engine DLL Matrix
+
+Different deployment hosts feature widely disparate hardware architectures (Windows workstations with RTX GPUs, headless Linux servers with A100/H100 clusters, AMD/Intel systems, or CPU-only VMs). Summertime AI Workbench provides specialized engine backends for each environment.
+
+### Hardware Acceleration Compatibility Matrix
+
+| Host Environment | Recommended Engine | Required CUDA / System Libraries | Setup & Verification Steps |
+| :--- | :--- | :--- | :--- |
+| **Windows 10/11 (NVIDIA RTX 30/40/50 Series)** | **Llama-Swap (llama-server.exe)** | • NVIDIA Driver >= 535.xx<br>• `cudart64_12.dll`<br>• `cublas64_12.dll`<br>• `cublasLt64_12.dll`<br>• `libomp.dll`<br>• `ggml-cuda.dll` | Place DLLs into `bin/` directory.<br>In PowerShell: `$env:PATH = "$PSScriptRoot\bin;$env:PATH"`.<br>Run `nvidia-smi` to verify driver. |
+| **Linux (Ubuntu 22.04 / RHEL 9 with NVIDIA GPUs)** | **vLLM** OR **Llama-Swap** | • NVIDIA Driver >= 535.xx<br>• CUDA Toolkit 12.1+ / 12.4+<br>• `libcudart.so.12`<br>• `libcublas.so.12` | Install CUDA via `apt install nvidia-cuda-toolkit`.<br>Set `export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH`.<br>Verify with `nvidia-smi` and `nvcc --version`. |
+| **Windows PC (AMD Radeon / Intel Arc)** | **Llama-Swap (Vulkan)** | • Latest AMD Adrenalin / Intel Arc drivers<br>• `vulkan-1.dll`<br>• `ggml-vulkan.dll` | Bundled in `llama-vulkan` runtime package. Offloads layers directly via Vulkan SPIR-V compute. |
+| **Windows / Linux (CPU-Only / VM)** | **Llama-Swap (CPU AVX2)** | • Modern x86-64 CPU with AVX/AVX2/AVX-512<br>• `libomp.dll` / `libgomp.so` | Automatic fallback to `ggml-cpu-haswell` or `ggml-cpu-alderlake` binaries. Set `--threads <NUM_CORES>`. |
+| **Windows Host wanting vLLM** | **vLLM via WSL2 or Docker** | • Windows 10 build 19044+ or Windows 11<br>• WSL2 with Ubuntu 22.04 LTS<br>• NVIDIA Container Toolkit | **Note**: vLLM has no official native Windows support.<br>Run vLLM inside WSL2 with GPU passthrough or via Docker with `--gpus all`. |
+
+---
+
+### Step-by-Step Machine Setup Configurations
+
+#### Configuration A: Windows Server / Workstation with NVIDIA GPU
+1. **Download & Place CUDA Runtime DLLs**:
+   Ensure `bin/` contains the following DLL files from CUDA 12.x:
+   - `cublas64_12.dll`
+   - `cublasLt64_12.dll`
+   - `cudart64_12.dll`
+   - `libomp.dll`
+   - `ggml-cuda.dll`
+2. **Add `bin` to Environment PATH**:
+   `start-backend.ps1` automatically prepends `$backendDir\bin` to `$env:PATH` upon execution.
+   If running manually:
+   ```powershell
+   $env:PATH = "$PWD\bin;$env:PATH"
+   ```
+3. **Audio Transcription & TTS Dependency**:
+   Offline speech recognition (`faster-whisper` / `ctranslate2`) dynamically links against `cublas64_12.dll` and `cudart64_12.dll`. Keeping these in `bin/` satisfies both LLM inference and local audio services.
+
+#### Configuration B: Dedicated Enterprise Linux GPU Server (RunPod, Lambda, AWS EC2, On-Prem)
+1. **Verify GPU Driver & CUDA**:
+   ```bash
+   nvidia-smi
+   nvcc --version
+   ```
+2. **Launch with Native vLLM or Llama-Swap**:
+   - For **Llama-Swap**: Place Linux `bin/llama-swap` and compile/place `llama-server`.
+   - For **vLLM**: Install via pip: `pip install vllm`. Set `backend: vllm` in `config/config.yaml`.
+   vLLM requires NVIDIA Compute Capability >= 7.0 (Turing, Ampere, Ada Lovelace, Hopper, Blackwell).
+
+#### Configuration C: Windows without NVIDIA GPU (Vulkan / CPU)
+1. Set `auto-configure-models.py` to offload via Vulkan or reduce `--n-gpu-layers 0` for pure CPU multi-threading.
+2. In `config/llama-swap.yaml`, point `--threads` to the physical CPU core count (e.g. `--threads 8`).
+
+---
+
+## 4. Cryptographic Authentication & Key Lifecycle
 
 Summertime completely rejects hardcoded API tokens. Every key is dynamically generated, cryptographically hashed using **Argon2id**, and authenticated per request with zero external network overhead.
 
@@ -122,7 +174,7 @@ sequenceDiagram
 
 ---
 
-## 4. Model Lifecycle & VRAM Arbiter
+## 5. Model Lifecycle & VRAM Arbiter
 
 To allow multi-model AI suites to run on moderate hardware (e.g., 6GB–16GB VRAM), the server implements a dynamic lifecycle state machine coordinated between FastAPI and `llama-swap`.
 
@@ -144,7 +196,7 @@ stateDiagram-v2
 
 ---
 
-## 5. Intelligent Model Routing
+## 6. Intelligent Model Routing
 
 Clients do not need to know the exact GGUF filename or quantization parameters. Instead, clients query standardized **role aliases**:
 
@@ -166,7 +218,7 @@ The router injects headers in the HTTP response so clients know which physical m
 
 ---
 
-## 6. Production Linux Systemd Deployment
+## 7. Production Linux Systemd Deployment
 
 In an enterprise Linux environment (Ubuntu 22.04 LTS / RHEL 9), deploy the server as managed systemd service units.
 
@@ -200,7 +252,7 @@ sudo systemctl status summertime
 
 ---
 
-## 7. Nginx Reverse Proxy with TLS Termination
+## 8. Nginx Reverse Proxy with TLS Termination
 
 Exposing port 8000 directly across a corporate WAN is not recommended. Use Nginx with TLS (HTTPS) and WebSocket/SSE streaming support:
 
@@ -239,7 +291,7 @@ server {
 
 ---
 
-## 8. Database Schema & Data Dictionary
+## 9. Database Schema & Data Dictionary
 
 Summertime persists system state in an embedded SQLite database (`workbench.db`) using SQLAlchemy ORM.
 
@@ -267,7 +319,7 @@ Summertime persists system state in an embedded SQLite database (`workbench.db`)
 
 ---
 
-## 9. Troubleshooting & Diagnostics
+## 10. Troubleshooting & Diagnostics
 
 | Symptom | Primary Cause | Resolution |
 | :--- | :--- | :--- |
