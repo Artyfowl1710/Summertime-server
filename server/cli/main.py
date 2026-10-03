@@ -305,6 +305,50 @@ def keys_revoke(key_id: str = typer.Argument(...)):
         _check(r)
 
 
+@admin_app.command("export-client")
+def admin_export_client(
+    owner: str = typer.Option(..., "--owner", help="Client identifier or machine name (e.g. laptop-analyst-1)"),
+    server_url: str = typer.Option(None, "--server-url", help="Public/LAN base URL of this server (e.g. http://192.168.1.100:8000)"),
+    scope: str = typer.Option("user", "--scope", help="Key scope: user or admin"),
+):
+    """
+    Generate a dynamic client API key and print ready-to-use configuration blocks
+    for INDRA, Hermes Agent, Codex, OpenAI SDK, Cursor, and Continue.
+    """
+    base_url = (server_url or _api_base()).rstrip("/")
+    with _client() as c:
+        data = _check(c.post("/v1/admin/keys", json={"owner": owner, "scope": scope}))
+    api_key = data["api_key"]
+
+    console.print("\n" + "=" * 65)
+    console.print(f"[bold cyan]DYNAMIC CLIENT ONBOARDING PACKET FOR: {owner}[/bold cyan]")
+    console.print("=" * 65)
+    console.print(f"Generated Key (shown once): [bold yellow]{api_key}[/bold yellow]")
+    console.print(f"Server Base URL:            [bold green]{base_url}[/bold green]\n")
+
+    console.print("[bold]1. Single-Command Client Pairing (INDRA / Hermes CLI):[/bold]")
+    console.print(f"  [cyan]indra set-server --url {base_url} --key {api_key}[/cyan]\n")
+
+    console.print("[bold]2. Client .env Configuration Block:[/bold]")
+    console.print(f"  WORKBENCH_API_BASE={base_url}")
+    console.print(f"  WORKBENCH_API_KEY={api_key}")
+    console.print(f"  OPENAI_API_KEY={api_key}")
+    console.print(f"  OPENAI_BASE_URL={base_url}/v1\n")
+
+    console.print("[bold]3. Health & Connectivity Verification (cURL):[/bold]")
+    console.print(f"  curl -s -H \"Authorization: Bearer {api_key}\" {base_url}/v1/models\n")
+
+    console.print("[bold]4. OpenAI Python SDK Integration:[/bold]")
+    console.print("  from openai import OpenAI")
+    console.print(f"  client = OpenAI(base_url=\"{base_url}/v1\", api_key=\"{api_key}\")")
+    console.print("  response = client.chat.completions.create(")
+    console.print("      model=\"indra-auto\",")
+    console.print("      messages=[{\"role\": \"user\", \"content\": \"Hello!\"}]")
+    console.print("  )")
+    console.print("  print(response.choices[0].message.content)")
+    console.print("=" * 65 + "\n")
+
+
 # ── rag ───────────────────────────────────────────────────────────────────────
 
 rag_app = typer.Typer(help="RAG operations", no_args_is_help=True)

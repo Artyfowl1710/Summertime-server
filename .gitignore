@@ -1,46 +1,55 @@
-# Python
+# ==============================================================================
+# AI Workbench / Summertime Server .gitignore
+# ==============================================================================
+
+# Python Bytecode & Cache
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 *.egg-info/
 .eggs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.bak*
 
-# Virtual environments
-.venv/
+# Virtual Environments
 venv/
+.venv/
 env/
+venv.*/
+.env.reference/
 
-# Environment and secrets
+# Environment Variables & Secrets
 .env
 .env.*
 !.env.example
 *.key
 *.pem
+token.json
+credentials.json
 
-# Databases
+# Databases & Runtime Locks
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
-*.db-*
-*.sqlite-*
+*.pid
+data/*.pid
+storage/
+.qdrant-initialized
 
 # Logs
-*.log
 logs/
+*.log
+llama_swap.err
 
-# Generated files and uploads
-uploads/
-outputs/
-generated/
-tmp/
-temp/
-
-# Model files and caches
+# Heavy Model Binaries & GGUFs (Do NOT commit to git)
 models/
 model_cache/
+*.gguf
 *.safetensors
 *.ckpt
 *.pt
@@ -48,17 +57,28 @@ model_cache/
 *.onnx
 *.bin
 
-# IDE and OS files
-.vscode/
+# Compiled Binaries & DLLs
+*.exe
+*.dll
+*.so
+*.dylib
+bin/*.dll
+bin/*.exe
+
+# Whitelist tracked Linux binary and license
+!bin/llama-swap
+!bin/LICENSE-LLVM-OpenMP
+
+# IDE & OS Artifacts
 .idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
 
-# Build artifacts
+# Build Artifacts
 build/
 dist/
 .coverage
-htmlcov/bin/
-venv/
-*.exe
-*.dll
+htmlcov/

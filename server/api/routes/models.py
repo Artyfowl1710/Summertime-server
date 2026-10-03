@@ -19,8 +19,13 @@ from sqlalchemy.orm import Session
 from server.backends.downloader import resolve_model
 from server.backends import llamaswap as ls_driver
 from server.config import settings
-from server.core.auth import require_admin, require_auth
+from server.core.auth import require_admin
 from server.core.lifecycle import BusyModelError, lifecycle
+from server.core.model_routing import (
+    PUBLIC_MODEL_ALIASES,
+    alias_for,
+    alias_target,
+)
 from server.core.schemas import (
     ModelRegisterRequest, ModelResponse, ModelStatusResponse,
     ManifestEntry, SyncReport,
@@ -29,6 +34,19 @@ from server.db import ApiKey, ModelRecord, get_db
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["models"])
+
+# Keep these aligned with backend/config/llama-swap.yaml. The client uses this
+# metadata to decide when to compact; reporting 16K for a 32K server caused
+# premature compaction and repeated summary failures on document tasks.
+_CONTEXT_LENGTH_BY_MODEL = {
+    "gemma-2-2b-it": 32768,
+    "qwen3.5-4b": 32768,
+    "qwen2-vl-ocr-2b-instruct": 32768,
+}
+
+
+def _model_context_length(model_id: str) -> int:
+    return _CONTEXT_LENGTH_BY_MODEL.get(model_id, 16384)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -43,6 +61,36 @@ def _row_to_response(m: ModelRecord) -> ModelResponse:
         vram_mb=m.vram_mb,
         pinned=m.pinned,
     )
+
+
+def _openai_model_payload(m: ModelRecord) -> dict:
+    r = _row_to_response(m)
+    return {
+        **r.model_dump(),
+        "context_length": _model_context_length(m.id),
+        "object": "model",
+        "created": 0,
+        "owned_by": "workbench",
+    }
+
+
+def _alias_payload(alias, target: ModelRecord, *, exposed_id: str | None = None) -> dict:
+    return {
+        "id": exposed_id or alias.id,
+        "backend": target.backend,
+        "type": alias.model_type,
+        "task_tags": list(alias.task_tags),
+        "status": target.status,
+        "vram_mb": target.vram_mb,
+        "pinned": False,
+        "context_length": _model_context_length(target.id),
+        "object": "model",
+        "created": 0,
+        "owned_by": "workbench-router",
+        "display_name": alias.display_name,
+        "description": alias.description,
+        "alias_for": alias.target_model or "automatic",
+    }
 
 
 async def _register_one(req: ModelRegisterRequest, db: Session) -> ModelRecord:
@@ -134,19 +182,45 @@ async def register_model(
 
 # ── list ──────────────────────────────────────────────────────────────────────
 
-@router.get("/v1/models", response_model=list[ModelResponse])
+@router.get("/v1/models")
 def list_models(
     task_tags: str | None = None,
     db: Session = Depends(get_db),
-    _: ApiKey = Depends(require_auth),
+    _: ApiKey = Depends(require_admin),
 ):
     q = db.query(ModelRecord)
     rows = q.all()
-    result = [_row_to_response(m) for m in rows]
+    rows_by_id = {m.id: m for m in rows}
+    result = [_openai_model_payload(m) for m in rows]
+    result.extend(
+        _alias_payload(alias, rows_by_id[alias_target(alias)])
+        for alias in PUBLIC_MODEL_ALIASES
+        if alias_target(alias) in rows_by_id
+    )
     if task_tags:
         wanted = {t.strip() for t in task_tags.split(",")}
-        result = [r for r in result if wanted & set(r.task_tags)]
-    return result
+        result = [r for r in result if wanted & set(r["task_tags"])]
+    return {"object": "list", "data": result}
+
+
+@router.get("/v1/models/{model_id}")
+def get_model(
+    model_id: str,
+    db: Session = Depends(get_db),
+    _: ApiKey = Depends(require_admin),
+):
+    """OpenAI-compatible single-model lookup used by client capability probes."""
+    m = db.query(ModelRecord).filter(ModelRecord.id == model_id).first()
+    if m is not None:
+        return _openai_model_payload(m)
+
+    alias = alias_for(model_id)
+    if alias is None:
+        raise HTTPException(404, "Model not found")
+    target = db.query(ModelRecord).filter(ModelRecord.id == alias_target(alias)).first()
+    if target is None:
+        raise HTTPException(404, "Alias target is not registered")
+    return _alias_payload(alias, target, exposed_id=model_id)
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -155,12 +229,16 @@ def list_models(
 def model_status(
     model_id: str,
     db: Session = Depends(get_db),
-    _: ApiKey = Depends(require_auth),
+    _: ApiKey = Depends(require_admin),
 ):
     m = db.query(ModelRecord).filter(ModelRecord.id == model_id).first()
     if m is None:
+        alias = alias_for(model_id)
+        if alias is not None:
+            m = db.query(ModelRecord).filter(ModelRecord.id == alias_target(alias)).first()
+    if m is None:
         raise HTTPException(404, "Model not found")
-    return ModelStatusResponse(id=m.id, status=m.status)
+    return ModelStatusResponse(id=model_id, status=m.status)
 
 
 # ── delete ────────────────────────────────────────────────────────────────────

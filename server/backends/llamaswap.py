@@ -1,4 +1,4 @@
-﻿"""
+"""
 llama-swap backend driver.
 
 llama-swap is an unmodified Go binary that:
@@ -66,9 +66,18 @@ def _write_config(cfg: dict) -> None:
 
 def add_model_to_config(model_id: str, local_path: str, extra_args: list[str] | None = None) -> None:
     cfg = _read_config()
+    # Loading a registered model must retain its tuned server command.
+    if cfg.get("models", {}).get(model_id, {}).get("cmd") and extra_args is None:
+        return
+    bin_dir = Path(settings.llamaswap_bin).resolve().parent
+    server_candidate = bin_dir / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+    server_bin = str(server_candidate) if server_candidate.exists() else ("llama-server.exe" if sys.platform == "win32" else "llama-server")
     cfg.setdefault("models", {})[model_id] = {
-        "model": local_path,
-        "args": extra_args or [],
+        "cmd": subprocess.list2cmdline([
+            server_bin,
+            "--host", "127.0.0.1", "--port", "${PORT}",
+            "--model", local_path, *(extra_args or []),
+        ]),
     }
     _write_config(cfg)
     log.info("llama-swap config updated: added %s", model_id)
@@ -96,7 +105,7 @@ def start() -> None:
     cmd = [
         str(bin_path),
         "--config", str(settings.llamaswap_config),
-        "--port", str(settings.llamaswap_port),
+        "--listen", f"127.0.0.1:{settings.llamaswap_port}",
     ]
     if settings.llamaswap_watch_config:
         cmd.append("--watch-config")
@@ -179,9 +188,8 @@ async def load_model(model_id: str) -> None:
 
 
 async def unload_model(model_id: str) -> None:
-    """Remove from config; llama-swap will evict on next config reload."""
-    remove_model_from_config(model_id)
-    await asyncio.sleep(0.2)
+    """Leave residency and idle eviction to llama-swap's configured TTL."""
+    await asyncio.sleep(0)
 
 
 # â”€â”€ proxy helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

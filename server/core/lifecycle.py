@@ -90,13 +90,28 @@ class ModelLifecycleManager:
             log.warning("Could not reconcile llama-swap state: %s", exc)
             return
 
-        if not loaded:
-            log.info("llama-swap reconciliation: no loaded models reported")
-            return
-
         now = datetime.utcnow()
 
         with SessionLocal() as db:
+            # active_requests belongs to this gateway process.  If Workbench
+            # was restarted while a request was in flight, the old busy count
+            # is stale and would permanently pin every model as busy.  Clear
+            # those orphaned counters before reconciling llama-swap's state.
+            stale = (
+                db.query(ModelRecord)
+                .filter(ModelRecord.backend == "llamaswap", ModelRecord.active_requests > 0)
+                .all()
+            )
+            for m in stale:
+                m.active_requests = 0
+                if m.status == "busy":
+                    m.status = "cold"
+
+            if not loaded:
+                db.commit()
+                log.info("llama-swap reconciliation: no loaded models reported")
+                return
+
             models = (
                 db.query(ModelRecord)
                 .filter(
@@ -152,6 +167,9 @@ class ModelLifecycleManager:
     # â”€â”€ load / unload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _ensure_loaded(self, model_id: str) -> None:
+        # An external llama-swap may have loaded the model after gateway startup.
+        # Reconcile before budgeting VRAM so its allocation is not counted twice.
+        await self.reconcile_loaded_models()
         with SessionLocal() as db:
             m = _get_model(db, model_id)
             if m.status in ("idle", "busy"):
@@ -218,6 +236,11 @@ class ModelLifecycleManager:
     async def _needs_eviction(self, model_id: str) -> bool:
         with SessionLocal() as db:
             m = _get_model(db, model_id)
+            # llama-swap owns GGUF residency and switches models itself. Its
+            # currently loaded process is already included in free-VRAM data,
+            # so applying Workbench's generic budget here double-counts it.
+            if m.backend == "llamaswap":
+                return False
             needed = m.vram_mb or 0
         if needed == 0:
             return False
