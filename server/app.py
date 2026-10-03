@@ -1,4 +1,4 @@
-﻿"""
+"""
 FastAPI application factory.
 Single process, asyncio concurrency, --workers 1.
 """
@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     # â”€â”€ routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     app.include_router(health.router)
     app.include_router(admin.router)
+    app.include_router(admin.context_router)
     app.include_router(models.router)
     app.include_router(inference.router)
     app.include_router(generation.router)

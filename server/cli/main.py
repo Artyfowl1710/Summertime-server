@@ -349,6 +349,37 @@ def admin_export_client(
     console.print("=" * 65 + "\n")
 
 
+@admin_app.command("set-context")
+def admin_set_context(
+    preset: str = typer.Argument("balanced", help="Context preset: eco (4k), balanced (16k), power (32k), ultra (64k), or explicit token number"),
+):
+    """
+    One-click adjust model context window size for GPU VRAM and re-generate llama-swap configuration.
+    """
+    server_root = Path(__file__).resolve().parent.parent.parent
+    script = server_root / "auto-configure-models.py"
+
+    console.print(f"\n[bold cyan]Configuring GPU model context window to:[/bold cyan] [bold green]{preset.upper()}[/bold green]...")
+
+    args = [sys.executable, str(script)]
+    p_lower = preset.lower()
+    if p_lower in ["eco", "balanced", "power", "ultra", "4k", "16k", "32k", "64k"]:
+        args.extend(["--preset", p_lower])
+    elif p_lower.isdigit():
+        args.extend(["--ctx", p_lower])
+    else:
+        console.print(f"[red]Error: Unknown preset {preset!r}. Choose from: eco, balanced, power, ultra, or an integer token count.[/red]")
+        raise typer.Exit(1)
+
+    res = subprocess.run(args, capture_output=True, text=True)
+    if res.returncode == 0:
+        console.print(res.stdout)
+        console.print("[bold green][SUCCESS] Context window successfully applied to model serving pool![/bold green]\n")
+    else:
+        console.print(f"[red]Error configuring models:[/red]\n{res.stderr or res.stdout}")
+        raise typer.Exit(1)
+
+
 # ── rag ───────────────────────────────────────────────────────────────────────
 
 rag_app = typer.Typer(help="RAG operations", no_args_is_help=True)

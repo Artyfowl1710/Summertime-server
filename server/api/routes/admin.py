@@ -11,7 +11,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from server.core.auth import generate_key, hash_key, require_admin
+from server.core.auth import generate_key, hash_key, require_admin, require_auth
 from server.core.schemas import KeyCreateRequest, KeyCreateResponse, KeyListItem
 from server.db import ApiKey, get_db
 
@@ -70,3 +70,45 @@ def revoke_key(
         raise HTTPException(404, "Key not found")
     row.revoked = True
     db.commit()
+
+
+# ── context window optimizer endpoint ──────────────────────────────────────────
+import subprocess
+import sys
+from pathlib import Path
+from pydantic import BaseModel, Field
+
+class ContextChangeRequest(BaseModel):
+    preset: str | None = Field(None, description="eco, balanced, power, ultra")
+    context_length: int | None = Field(None, description="Explicit token count")
+
+context_router = APIRouter(prefix="/v1/admin/context", tags=["admin-context"])
+
+@context_router.post("")
+def update_server_context(
+    req: ContextChangeRequest,
+    _: ApiKey = Depends(require_auth),
+):
+    """
+    Adjust model context window and regenerate llama-swap configuration dynamically.
+    """
+    server_root = Path(__file__).resolve().parent.parent.parent.parent
+    script = server_root / "auto-configure-models.py"
+
+    args = [sys.executable, str(script)]
+    if req.preset:
+        args.extend(["--preset", req.preset.lower()])
+    elif req.context_length:
+        args.extend(["--ctx", str(req.context_length)])
+    else:
+        args.extend(["--preset", "balanced"])
+
+    res = subprocess.run(args, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise HTTPException(500, f"Failed to configure context: {res.stderr or res.stdout}")
+
+    return {
+        "ok": True,
+        "message": "Model context window updated successfully on GPU server",
+        "output": res.stdout,
+    }

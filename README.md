@@ -150,6 +150,40 @@ Server Base URL:            http://192.168.1.100:8000
 
 ---
 
+## ⚡ 1-Click GPU Context Window Switching (Eco / Balanced / Power / Ultra)
+
+Summertime Server provides hot-swapping of model context windows (`-c <tokens>`) to match the host machine's VRAM without blocking inference or requiring manual YAML reconfiguration:
+
+| Preset | Context Length | Target Hardware | Typical Use Case |
+|---|---|---|---|
+| **`eco`** | 4,096 tokens (4K) | 6GB - 8GB VRAM (e.g. RTX 3060/4060) | Low memory footprint, fast single-prompt generation |
+| **`balanced`** | 16,384 tokens (16K) | 12GB - 16GB VRAM (e.g. RTX 3080/4070) | Default recommended setting for general code and RAG |
+| **`power`** | 32,768 tokens (32K) | 24GB VRAM (e.g. RTX 3090/4090/A5000) | Deep reasoning, large codebase analysis, multi-file inspection |
+| **`ultra`** | 65,536 tokens (64K) | 48GB - 80GB VRAM (e.g. A6000/A100/H100) | Enterprise repository-wide architecture and massive document digests |
+
+### 1. Change Context via CLI
+```bash
+# Set context by hardware preset:
+python -m server.cli.main admin set-context eco
+python -m server.cli.main admin set-context balanced
+python -m server.cli.main admin set-context power
+python -m server.cli.main admin set-context ultra
+
+# Or specify custom token length:
+python auto-configure-models.py --ctx 8192
+```
+
+### 2. Change Context Remotely via REST API
+Clients (like the INDRA Desktop Dashboard) can dynamically adjust the server's context window on-the-fly:
+```bash
+curl -X POST http://192.168.1.100:8000/v1/admin/context \
+  -H "Authorization: Bearer wb_live_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"preset": "power"}'
+```
+
+---
+
 ## 🧪 Comprehensive Health Verification
 
 Run the built-in end-to-end verification suite anytime to confirm your server is operating at 100%:

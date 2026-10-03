@@ -2,14 +2,17 @@
 """
 Auto-configure llama-swap.yaml from whatever GGUF models exist in backend/models/.
 
-Run this script whenever you add or remove models:
+Run this script whenever you add or remove models, or when changing GPU context window:
     python auto-configure-models.py
+    python auto-configure-models.py --preset balanced
+    python auto-configure-models.py --ctx 16384
 
 It scans the models/ directory, identifies model types, and generates
-config/llama-swap.yaml with correct paths and tuned parameters for 6GB VRAM.
+config/llama-swap.yaml with correct paths and tuned parameters for your GPU VRAM.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -18,6 +21,8 @@ from pathlib import Path
 # Resolve paths relative to this script (which lives in backend/)
 BACKEND_ROOT = Path(__file__).resolve().parent
 MODELS_DIR = BACKEND_ROOT / "models"
+
+
 def resolve_executable(name: str) -> Path:
     """Resolve bundled Windows executables with or without an .exe suffix."""
     bin_dir = BACKEND_ROOT / "bin"
@@ -37,15 +42,22 @@ if sys.platform == "win32":
 else:
     CMD_STOP = "kill -9 ${PID} 2>/dev/null || true"
 
-# ── Model identification patterns ────────────────────────────────────────────
+# ── Context presets ───────────────────────────────────────────────────────────
+CONTEXT_PRESETS: dict[str, dict] = {
+    "eco": {"ctx": 4096, "batch": 128, "ubatch": 64, "label": "Eco (6-8GB VRAM)"},
+    "4k": {"ctx": 4096, "batch": 128, "ubatch": 64, "label": "Eco (6-8GB VRAM)"},
+    "balanced": {"ctx": 16384, "batch": 256, "ubatch": 128, "label": "Balanced (12-16GB VRAM)"},
+    "16k": {"ctx": 16384, "batch": 256, "ubatch": 128, "label": "Balanced (12-16GB VRAM)"},
+    "power": {"ctx": 32768, "batch": 512, "ubatch": 256, "label": "Power (24GB VRAM)"},
+    "32k": {"ctx": 32768, "batch": 512, "ubatch": 256, "label": "Power (24GB VRAM)"},
+    "ultra": {"ctx": 65536, "batch": 512, "ubatch": 256, "label": "Ultra (48GB+ VRAM)"},
+    "64k": {"ctx": 65536, "batch": 512, "ubatch": 256, "label": "Ultra (48GB+ VRAM)"},
+}
 
-# Patterns that identify vision/VLM models (need --mmproj)
+# ── Model identification patterns ────────────────────────────────────────────
 VLM_PATTERNS = re.compile(r"(vl|vlm|vision|ocr|qwen2-vl)", re.IGNORECASE)
-# Patterns that identify multimodal projector files
 MMPROJ_PATTERN = re.compile(r"mmproj", re.IGNORECASE)
 
-# Known model profiles: maps a filename substring to tuned parameters
-# Format: (alias, ctx_size, batch_size, ubatch_size, predict, extra_flags)
 MODEL_PROFILES: dict[str, dict] = {
     "qwen3.5-4b":       {"alias": "qwen3.5-4b",              "ctx": 65536, "batch": 512, "ubatch": 256, "predict": 4096, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
     "qwen_qwen3.5-4b":  {"alias": "qwen3.5-4b",              "ctx": 65536, "batch": 512, "ubatch": 256, "predict": 4096, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
@@ -55,7 +67,6 @@ MODEL_PROFILES: dict[str, dict] = {
     "phi-4-mini":        {"alias": "phi-4-mini-instruct",     "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 256,  "layers": 99, "extra": "--reasoning off"},
 }
 
-# Default profile for unknown models
 DEFAULT_PROFILE = {"ctx": 8192, "batch": 128, "ubatch": 64, "predict": 1024, "layers": 99, "extra": "--reasoning off"}
 
 
@@ -64,24 +75,21 @@ def find_profile(filename: str) -> dict:
     name_lower = filename.lower()
     for pattern, profile in MODEL_PROFILES.items():
         if pattern.lower() in name_lower:
-            return profile
+            return profile.copy()
     return DEFAULT_PROFILE.copy()
 
 
 def derive_alias(filename: str) -> str:
     """Create a reasonable alias from a GGUF filename."""
-    # Remove extension and quantization suffixes
     name = re.sub(r"[-_.]Q\d+_K.*\.gguf$", "", filename, flags=re.IGNORECASE)
     name = re.sub(r"\.gguf$", "", name, flags=re.IGNORECASE)
-    # Normalize separators
     name = name.replace("_", "-").replace(" ", "-").lower()
-    # Remove duplicate dashes
     name = re.sub(r"-+", "-", name).strip("-")
     return name
 
 
-def scan_models() -> list[dict]:
-    """Scan models/ directory and return model configurations."""
+def scan_models(target_ctx: int | None = None, batch_override: int | None = None, ubatch_override: int | None = None) -> list[dict]:
+    """Scan models/ directory and return tuned model configurations."""
     if not MODELS_DIR.exists():
         print(f"[ERROR] Models directory not found: {MODELS_DIR}")
         sys.exit(1)
@@ -98,33 +106,29 @@ def scan_models() -> list[dict]:
     seen_aliases: set[str] = set()
     for model_path in model_files:
         profile = find_profile(model_path.name)
-        alias = profile.get("alias") or derive_alias(model_path.name)
+        alias = profile.get("alias", derive_alias(model_path.name))
 
-        # Skip duplicate aliases (e.g. hardlinked model files that map to the
-        # same profile). llama-swap's strict YAML parser rejects duplicate keys.
         if alias in seen_aliases:
-            continue
+            alias = f"{alias}-{model_path.stem[-6:]}"
         seen_aliases.add(alias)
 
         is_vlm = bool(VLM_PATTERNS.search(model_path.name))
-
-        # Find matching mmproj for VLM models
         mmproj_path = None
         if is_vlm and mmproj_files:
-            # Try to match by model name similarity
-            model_stem = model_path.stem.lower()
-            for mp in mmproj_files:
-                mmproj_path = mp
-                break  # Use first available mmproj
+            mmproj_path = str(mmproj_files[0]).replace("\\", "/")
+
+        ctx_size = target_ctx if target_ctx else profile.get("ctx", DEFAULT_PROFILE["ctx"])
+        batch_size = batch_override if batch_override else profile.get("batch", DEFAULT_PROFILE["batch"])
+        ubatch_size = ubatch_override if ubatch_override else profile.get("ubatch", DEFAULT_PROFILE["ubatch"])
 
         entry = {
             "alias": alias,
             "path": str(model_path).replace("\\", "/"),
             "is_vlm": is_vlm,
-            "mmproj": str(mmproj_path).replace("\\", "/") if mmproj_path else None,
-            "ctx": profile.get("ctx", DEFAULT_PROFILE["ctx"]),
-            "batch": profile.get("batch", DEFAULT_PROFILE["batch"]),
-            "ubatch": profile.get("ubatch", DEFAULT_PROFILE["ubatch"]),
+            "mmproj": mmproj_path,
+            "ctx": ctx_size,
+            "batch": batch_size,
+            "ubatch": ubatch_size,
             "predict": profile.get("predict", DEFAULT_PROFILE["predict"]),
             "layers": profile.get("layers", DEFAULT_PROFILE["layers"]),
             "extra": profile.get("extra", DEFAULT_PROFILE["extra"]),
@@ -171,12 +175,33 @@ def generate_yaml(models: list[dict]) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Auto-configure llama-swap.yaml with GPU context optimization")
+    parser.add_argument("--preset", choices=list(CONTEXT_PRESETS.keys()), help="Context window preset (eco, balanced, power, ultra)")
+    parser.add_argument("--ctx", type=int, help="Explicit context size tokens (e.g. 16384)")
+    args = parser.parse_args()
+
+    # Determine context window override
+    target_ctx = None
+    batch_size = None
+    ubatch_size = None
+
+    if args.preset:
+        preset_info = CONTEXT_PRESETS[args.preset]
+        target_ctx = preset_info["ctx"]
+        batch_size = preset_info["batch"]
+        ubatch_size = preset_info["ubatch"]
+        print(f"[auto-configure] Using preset: {args.preset.upper()} -> {target_ctx:,} tokens ({preset_info['label']})")
+    elif args.ctx:
+        target_ctx = args.ctx
+        print(f"[auto-configure] Using explicit context size: {target_ctx:,} tokens")
+    else:
+        env_ctx = os.environ.get("WORKBENCH_CONTEXT_SIZE") or os.environ.get("INDRA_CONTEXT_SIZE")
+        if env_ctx and env_ctx.isdigit():
+            target_ctx = int(env_ctx)
+            print(f"[auto-configure] Using context size from environment: {target_ctx:,} tokens")
+
     print(f"[auto-configure] Scanning: {MODELS_DIR}")
-    if not LLAMA_SERVER.is_file():
-        print(f"[ERROR] llama-server is missing: {LLAMA_SERVER}")
-        print("[ERROR] Run install-indra.ps1 before starting Indra.")
-        sys.exit(1)
-    models = scan_models()
+    models = scan_models(target_ctx=target_ctx, batch_override=batch_size, ubatch_override=ubatch_size)
 
     if not models:
         print("[auto-configure] No models found. Exiting.")
@@ -186,7 +211,7 @@ def main():
     for m in models:
         vlm_tag = " [VLM]" if m["is_vlm"] else ""
         mmproj_tag = f" (mmproj: {Path(m['mmproj']).name})" if m["mmproj"] else ""
-        print(f"  - {m['alias']}: {Path(m['path']).name}{vlm_tag}{mmproj_tag}")
+        print(f"  - {m['alias']}: {Path(m['path']).name} (ctx: {m['ctx']:,}){vlm_tag}{mmproj_tag}")
 
     yaml_content = generate_yaml(models)
 
