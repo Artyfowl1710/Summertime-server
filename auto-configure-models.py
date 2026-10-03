@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Auto-configure llama-swap.yaml from whatever GGUF models exist in backend/models/.
+Auto-configure llama-swap.yaml based on locally available GGUF models.
 
-Run this script whenever you add or remove models, or when changing GPU context window:
-    python auto-configure-models.py
-    python auto-configure-models.py --preset balanced
-    python auto-configure-models.py --ctx 16384
+Scans the models/ directory, profiles known model architectures, and generates
+a production-ready llama-swap.yaml file. Automatically handles multimodal
+(VLM) projector mapping (--mmproj) for models like Qwen2-VL.
 
-It scans the models/ directory, identifies model types, and generates
-config/llama-swap.yaml with correct paths and tuned parameters for your GPU VRAM.
+Usage:
+    python auto-configure-models.py [--preset eco|balanced|power|ultra] [--ctx TOKENS]
 """
 from __future__ import annotations
 
@@ -18,20 +17,18 @@ import re
 import sys
 from pathlib import Path
 
-# Resolve paths relative to this script (which lives in backend/)
-BACKEND_ROOT = Path(__file__).resolve().parent
-MODELS_DIR = BACKEND_ROOT / "models"
+# Paths relative to backend root
+BACKEND_DIR = Path(__file__).resolve().parent
+MODELS_DIR = BACKEND_DIR / "models"
+CONFIG_OUT = BACKEND_DIR / "config" / "llama-swap.yaml"
 
-
-def resolve_executable(name: str) -> Path:
-    """Resolve bundled Windows executables with or without an .exe suffix."""
-    bin_dir = BACKEND_ROOT / "bin"
-    candidates = (bin_dir / f"{name}.exe", bin_dir / name)
-    return next((path for path in candidates if path.is_file()), candidates[0])
-
-
-LLAMA_SERVER = resolve_executable("llama-server")
-CONFIG_OUT = BACKEND_ROOT / "config" / "llama-swap.yaml"
+# Platform-specific binary paths
+if sys.platform == "win32":
+    LLAMA_SERVER = BACKEND_DIR / "bin" / "llama-server.exe"
+    LLAMA_SWAP = BACKEND_DIR / "bin" / "llama-swap.exe"
+else:
+    LLAMA_SERVER = BACKEND_DIR / "bin" / "llama-server"
+    LLAMA_SWAP = BACKEND_DIR / "bin" / "llama-swap"
 
 # Stop command template (PowerShell on Windows, kill on Linux/macOS)
 if sys.platform == "win32":
@@ -59,12 +56,12 @@ VLM_PATTERNS = re.compile(r"(vl|vlm|vision|ocr|qwen2-vl)", re.IGNORECASE)
 MMPROJ_PATTERN = re.compile(r"mmproj", re.IGNORECASE)
 
 MODEL_PROFILES: dict[str, dict] = {
-    "qwen3.5-4b":       {"alias": "qwen3.5-4b",              "ctx": 65536, "batch": 512, "ubatch": 256, "predict": 4096, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
-    "qwen_qwen3.5-4b":  {"alias": "qwen3.5-4b",              "ctx": 65536, "batch": 512, "ubatch": 256, "predict": 4096, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
-    "gemma-2-2b":        {"alias": "gemma-2-2b-it",           "ctx": 8192,  "batch": 512, "ubatch": 256, "predict": 2048, "layers": 99, "extra": "--reasoning off"},
-    "hermes-3-llama":    {"alias": "hermes-3-llama-8b",       "ctx": 32768, "batch": 256, "ubatch": 128, "predict": 4096, "layers": 99, "extra": "--reasoning off"},
-    "qwen2-vl-ocr":      {"alias": "qwen2-vl-ocr-2b-instruct","ctx": 16384, "batch": 128, "ubatch": 64,  "predict": 512,  "layers": 99, "extra": "--reasoning off"},
-    "phi-4-mini":        {"alias": "phi-4-mini-instruct",     "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 256,  "layers": 99, "extra": "--reasoning off"},
+    "qwen3.5-4b":       {"alias": "qwen3.5-4b",              "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
+    "qwen_qwen3.5-4b":  {"alias": "qwen3.5-4b",              "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
+    "gemma-2-2b":        {"alias": "gemma-2-2b-it",           "ctx": 8192,  "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning off"},
+    "hermes-3-llama":    {"alias": "hermes-3-llama-8b",       "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning off"},
+    "qwen2-vl-ocr":      {"alias": "qwen2-vl-ocr-2b-instruct","ctx": 8192,  "batch": 128, "ubatch": 64,  "predict": 512,  "layers": 99, "extra": "--reasoning off"},
+    "phi-4-mini":        {"alias": "phi-4-mini-instruct",     "ctx": 8192,  "batch": 256, "ubatch": 128, "predict": 256,  "layers": 99, "extra": "--reasoning off"},
 }
 
 DEFAULT_PROFILE = {"ctx": 8192, "batch": 128, "ubatch": 64, "predict": 1024, "layers": 99, "extra": "--reasoning off"}
@@ -89,7 +86,7 @@ def derive_alias(filename: str) -> str:
 
 
 def scan_models(target_ctx: int | None = None, batch_override: int | None = None, ubatch_override: int | None = None) -> list[dict]:
-    """Scan models/ directory and return tuned model configurations."""
+    """Scan models/ directory and return model configurations."""
     if not MODELS_DIR.exists():
         print(f"[ERROR] Models directory not found: {MODELS_DIR}")
         sys.exit(1)
@@ -106,29 +103,33 @@ def scan_models(target_ctx: int | None = None, batch_override: int | None = None
     seen_aliases: set[str] = set()
     for model_path in model_files:
         profile = find_profile(model_path.name)
-        alias = profile.get("alias", derive_alias(model_path.name))
+        alias = profile.get("alias") or derive_alias(model_path.name)
 
         if alias in seen_aliases:
-            alias = f"{alias}-{model_path.stem[-6:]}"
+            continue
         seen_aliases.add(alias)
 
         is_vlm = bool(VLM_PATTERNS.search(model_path.name))
+
         mmproj_path = None
         if is_vlm and mmproj_files:
-            mmproj_path = str(mmproj_files[0]).replace("\\", "/")
+            for mp in mmproj_files:
+                mmproj_path = mp
+                break
 
-        ctx_size = target_ctx if target_ctx else profile.get("ctx", DEFAULT_PROFILE["ctx"])
-        batch_size = batch_override if batch_override else profile.get("batch", DEFAULT_PROFILE["batch"])
-        ubatch_size = ubatch_override if ubatch_override else profile.get("ubatch", DEFAULT_PROFILE["ubatch"])
+        # Apply context override if provided
+        ctx = target_ctx if target_ctx else profile.get("ctx", DEFAULT_PROFILE["ctx"])
+        batch = batch_override if batch_override else profile.get("batch", DEFAULT_PROFILE["batch"])
+        ubatch = ubatch_override if ubatch_override else profile.get("ubatch", DEFAULT_PROFILE["ubatch"])
 
         entry = {
             "alias": alias,
             "path": str(model_path).replace("\\", "/"),
             "is_vlm": is_vlm,
-            "mmproj": mmproj_path,
-            "ctx": ctx_size,
-            "batch": batch_size,
-            "ubatch": ubatch_size,
+            "mmproj": str(mmproj_path).replace("\\", "/") if mmproj_path else None,
+            "ctx": ctx,
+            "batch": batch,
+            "ubatch": ubatch,
             "predict": profile.get("predict", DEFAULT_PROFILE["predict"]),
             "layers": profile.get("layers", DEFAULT_PROFILE["layers"]),
             "extra": profile.get("extra", DEFAULT_PROFILE["extra"]),
@@ -139,18 +140,22 @@ def scan_models(target_ctx: int | None = None, batch_override: int | None = None
 
 
 def generate_yaml(models: list[dict]) -> str:
-    """Generate llama-swap.yaml content."""
-    llama_server = str(LLAMA_SERVER).replace("\\", "/")
+    """Generate the llama-swap.yaml content."""
+    server_bin = str(LLAMA_SERVER).replace("\\", "/")
 
-    lines = ["healthCheckTimeout: 180", "models:"]
+    lines = [
+        "healthCheckTimeout: 180",
+        "models:",
+    ]
 
     for m in models:
         lines.append(f"  {m['alias']}:")
         lines.append(f"    cmdStop: '{CMD_STOP}'")
 
         cmd_parts = [
-            f'"{llama_server}"',
-            "--host 127.0.0.1 --port ${PORT}",
+            f'"{server_bin}"',
+            "--host 127.0.0.1",
+            "--port ${PORT}",
             f'--model "{m["path"]}"',
             f'--alias {m["alias"]}',
             f'--n-gpu-layers {m["layers"]} --ctx-size {m["ctx"]} --parallel 1',
@@ -180,7 +185,6 @@ def main():
     parser.add_argument("--ctx", type=int, help="Explicit context size tokens (e.g. 16384)")
     args = parser.parse_args()
 
-    # Determine context window override
     target_ctx = None
     batch_size = None
     ubatch_size = None
