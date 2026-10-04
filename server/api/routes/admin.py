@@ -11,7 +11,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from server.core.auth import generate_key, hash_key, require_admin, require_auth
+from server.core.auth import generate_key, hash_key, require_admin
 from server.core.schemas import KeyCreateRequest, KeyCreateResponse, KeyListItem
 from server.db import ApiKey, get_db
 
@@ -72,43 +72,58 @@ def revoke_key(
     db.commit()
 
 
-# ── context window optimizer endpoint ──────────────────────────────────────────
-import subprocess
-import sys
-from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from typing import Optional
 
-class ContextChangeRequest(BaseModel):
-    preset: str | None = Field(None, description="eco, balanced, power, ultra")
-    context_length: int | None = Field(None, description="Explicit token count")
 
-context_router = APIRouter(prefix="/v1/admin/context", tags=["admin-context"])
+class ContextConfigRequest(BaseModel):
+    context_length: int
+    preset: Optional[str] = None
+    kv_quant: Optional[str] = "q4_0"
 
-@context_router.post("")
-def update_server_context(
-    req: ContextChangeRequest,
-    _: ApiKey = Depends(require_auth),
-):
-    """
-    Adjust model context window and regenerate llama-swap configuration dynamically.
-    """
-    server_root = Path(__file__).resolve().parent.parent.parent.parent
-    script = server_root / "auto-configure-models.py"
 
-    args = [sys.executable, str(script)]
+@router.post("/context")
+def set_server_context(req: ContextConfigRequest):
+    """Dynamically reconfigures server context size and KV cache quantization."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script_path = Path(__file__).resolve().parent.parent.parent.parent / "auto-configure-models.py"
+    cmd = [sys.executable, str(script_path), "--ctx", str(req.context_length)]
+    if req.kv_quant:
+        cmd.extend(["--kv-quant", req.kv_quant])
     if req.preset:
-        args.extend(["--preset", req.preset.lower()])
-    elif req.context_length:
-        args.extend(["--ctx", str(req.context_length)])
-    else:
-        args.extend(["--preset", "balanced"])
+        cmd.extend(["--preset", req.preset])
 
-    res = subprocess.run(args, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise HTTPException(500, f"Failed to configure context: {res.stderr or res.stdout}")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return {
+            "ok": proc.returncode == 0,
+            "context_length": req.context_length,
+            "kv_quant": req.kv_quant,
+            "output": proc.stdout or proc.stderr,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
-    return {
-        "ok": True,
-        "message": "Model context window updated successfully on GPU server",
-        "output": res.stdout,
-    }
+
+@router.get("/context")
+def get_server_context():
+    """Returns the currently active context size and KV quantization from llama-swap.yaml."""
+    from pathlib import Path
+    import re
+
+    cfg = Path(__file__).resolve().parent.parent.parent.parent / "config" / "llama-swap.yaml"
+    ctx = 32768
+    kv = "q4_0"
+    if cfg.exists():
+        text = cfg.read_text(encoding="utf-8")
+        m_ctx = re.search(r"--ctx-size\s+(\d+)", text)
+        if m_ctx:
+            ctx = int(m_ctx.group(1))
+        m_kv = re.search(r"--cache-type-k\s+([a-zA-Z0-9_]+)", text)
+        if m_kv:
+            kv = m_kv.group(1)
+    return {"context_length": ctx, "kv_quant": kv}
+

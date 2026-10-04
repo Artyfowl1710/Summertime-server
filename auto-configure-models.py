@@ -41,14 +41,15 @@ else:
 
 # ── Context presets ───────────────────────────────────────────────────────────
 CONTEXT_PRESETS: dict[str, dict] = {
-    "eco": {"ctx": 4096, "batch": 128, "ubatch": 64, "label": "Eco (6-8GB VRAM)"},
-    "4k": {"ctx": 4096, "batch": 128, "ubatch": 64, "label": "Eco (6-8GB VRAM)"},
-    "balanced": {"ctx": 16384, "batch": 256, "ubatch": 128, "label": "Balanced (12-16GB VRAM)"},
-    "16k": {"ctx": 16384, "batch": 256, "ubatch": 128, "label": "Balanced (12-16GB VRAM)"},
-    "power": {"ctx": 32768, "batch": 512, "ubatch": 256, "label": "Power (24GB VRAM)"},
-    "32k": {"ctx": 32768, "batch": 512, "ubatch": 256, "label": "Power (24GB VRAM)"},
-    "ultra": {"ctx": 65536, "batch": 512, "ubatch": 256, "label": "Ultra (48GB+ VRAM)"},
-    "64k": {"ctx": 65536, "batch": 512, "ubatch": 256, "label": "Ultra (48GB+ VRAM)"},
+    "eco": {"ctx": 8192, "batch": 128, "ubatch": 64, "label": "Eco (4-6GB VRAM, Q4_0 KV)"},
+    "4k": {"ctx": 4096, "batch": 128, "ubatch": 64, "label": "Minimal (4GB VRAM)"},
+    "8k": {"ctx": 8192, "batch": 128, "ubatch": 64, "label": "Eco (6-8GB VRAM)"},
+    "balanced": {"ctx": 32768, "batch": 256, "ubatch": 128, "label": "Balanced (8-16GB VRAM, Q4_0 KV)"},
+    "16k": {"ctx": 16384, "batch": 256, "ubatch": 128, "label": "Balanced 16K"},
+    "32k": {"ctx": 32768, "batch": 256, "ubatch": 128, "label": "Power 32K (Q4_0 KV)"},
+    "power": {"ctx": 49152, "batch": 512, "ubatch": 256, "label": "Power (16-24GB VRAM)"},
+    "ultra": {"ctx": 65536, "batch": 512, "ubatch": 256, "label": "Ultra (24GB+ VRAM, Q4_0 KV)"},
+    "64k": {"ctx": 65536, "batch": 512, "ubatch": 256, "label": "Ultra 64K"},
 }
 
 # ── Model identification patterns ────────────────────────────────────────────
@@ -56,12 +57,12 @@ VLM_PATTERNS = re.compile(r"(vl|vlm|vision|ocr|qwen2-vl)", re.IGNORECASE)
 MMPROJ_PATTERN = re.compile(r"mmproj", re.IGNORECASE)
 
 MODEL_PROFILES: dict[str, dict] = {
-    "qwen3.5-4b":       {"alias": "qwen3.5-4b",              "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
-    "qwen_qwen3.5-4b":  {"alias": "qwen3.5-4b",              "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
+    "qwen3.5-4b":       {"alias": "qwen3.5-4b",              "ctx": 32768, "batch": 256, "ubatch": 128, "predict": 4096, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
+    "qwen_qwen3.5-4b":  {"alias": "qwen3.5-4b",              "ctx": 32768, "batch": 256, "ubatch": 128, "predict": 4096, "layers": 99, "extra": "--reasoning-budget 0 --reasoning off"},
     "gemma-2-2b":        {"alias": "gemma-2-2b-it",           "ctx": 8192,  "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning off"},
-    "hermes-3-llama":    {"alias": "hermes-3-llama-8b",       "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning off"},
-    "qwen2-vl-ocr":      {"alias": "qwen2-vl-ocr-2b-instruct","ctx": 8192,  "batch": 128, "ubatch": 64,  "predict": 512,  "layers": 99, "extra": "--reasoning off"},
-    "phi-4-mini":        {"alias": "phi-4-mini-instruct",     "ctx": 8192,  "batch": 256, "ubatch": 128, "predict": 256,  "layers": 99, "extra": "--reasoning off"},
+    "hermes-3-llama":    {"alias": "hermes-3-llama-8b",       "ctx": 32768, "batch": 256, "ubatch": 128, "predict": 4096, "layers": 99, "extra": "--reasoning off"},
+    "qwen2-vl-ocr":      {"alias": "qwen2-vl-ocr-2b-instruct","ctx": 8192,  "batch": 128, "ubatch": 64,  "predict": 1024, "layers": 99, "extra": "--reasoning off"},
+    "phi-4-mini":        {"alias": "phi-4-mini-instruct",     "ctx": 16384, "batch": 256, "ubatch": 128, "predict": 2048, "layers": 99, "extra": "--reasoning off"},
 }
 
 DEFAULT_PROFILE = {"ctx": 8192, "batch": 128, "ubatch": 64, "predict": 1024, "layers": 99, "extra": "--reasoning off"}
@@ -139,7 +140,7 @@ def scan_models(target_ctx: int | None = None, batch_override: int | None = None
     return models
 
 
-def generate_yaml(models: list[dict]) -> str:
+def generate_yaml(models: list[dict], kv_quant: str = "q4_0") -> str:
     """Generate the llama-swap.yaml content."""
     server_bin = str(LLAMA_SERVER).replace("\\", "/")
 
@@ -160,7 +161,7 @@ def generate_yaml(models: list[dict]) -> str:
             f'--alias {m["alias"]}',
             f'--n-gpu-layers {m["layers"]} --ctx-size {m["ctx"]} --parallel 1',
             f'--batch-size {m["batch"]} --ubatch-size {m["ubatch"]} --threads 8',
-            "--flash-attn on --cache-type-k q4_0 --cache-type-v q4_0",
+            f"--flash-attn on --cache-type-k {kv_quant} --cache-type-v {kv_quant}",
         ]
 
         if m["is_vlm"] and m["mmproj"]:
@@ -182,7 +183,8 @@ def generate_yaml(models: list[dict]) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Auto-configure llama-swap.yaml with GPU context optimization")
     parser.add_argument("--preset", choices=list(CONTEXT_PRESETS.keys()), help="Context window preset (eco, balanced, power, ultra)")
-    parser.add_argument("--ctx", type=int, help="Explicit context size tokens (e.g. 16384)")
+    parser.add_argument("--ctx", type=int, help="Explicit context size tokens (e.g. 32768)")
+    parser.add_argument("--kv-quant", choices=["q4_0", "q8_0", "f16"], default=os.environ.get("LLAMA_KV_QUANT", "q4_0"), help="KV cache quantization type (default: q4_0)")
     args = parser.parse_args()
 
     target_ctx = None
@@ -217,7 +219,8 @@ def main():
         mmproj_tag = f" (mmproj: {Path(m['mmproj']).name})" if m["mmproj"] else ""
         print(f"  - {m['alias']}: {Path(m['path']).name} (ctx: {m['ctx']:,}){vlm_tag}{mmproj_tag}")
 
-    yaml_content = generate_yaml(models)
+    print(f"[auto-configure] KV cache quantization: {args.kv_quant}")
+    yaml_content = generate_yaml(models, kv_quant=args.kv_quant)
 
     CONFIG_OUT.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_OUT.write_text(yaml_content, encoding="utf-8")

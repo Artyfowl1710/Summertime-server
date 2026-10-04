@@ -35,6 +35,9 @@ from server.db import ApiKey, ModelRecord, get_db
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["models"])
 
+import re
+from pathlib import Path
+
 # Keep these aligned with backend/config/llama-swap.yaml. The client uses this
 # metadata to decide when to compact; reporting 16K for a 32K server caused
 # premature compaction and repeated summary failures on document tasks.
@@ -46,7 +49,17 @@ _CONTEXT_LENGTH_BY_MODEL = {
 
 
 def _model_context_length(model_id: str) -> int:
-    return _CONTEXT_LENGTH_BY_MODEL.get(model_id, 16384)
+    try:
+        cfg_path = Path(__file__).resolve().parent.parent.parent / "config" / "llama-swap.yaml"
+        if cfg_path.exists():
+            content = cfg_path.read_text(encoding="utf-8")
+            pattern = rf"{re.escape(model_id)}:.*?(?:cmd:.*?)--ctx-size\s+(\d+)"
+            m = re.search(pattern, content, re.DOTALL)
+            if m:
+                return int(m.group(1))
+    except Exception:
+        pass
+    return _CONTEXT_LENGTH_BY_MODEL.get(model_id, 32768)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
